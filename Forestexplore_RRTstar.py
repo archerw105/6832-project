@@ -17,8 +17,9 @@ rcParams['figure.figsize'] = (8, 5)
 start = np.array([15, 15]) # Start location
 goal = np.array([0, 0]) # Goal location
 
-n_obstacles = 50
+n_obstacles = 30
 obstacles = []
+np.random.seed(6)
 for i in range(n_obstacles):
     obstacles.append(
         (np.random.randint(2,15,1)[0],np.random.randint(2,15,1)[0],1.5*np.random.random_sample())
@@ -307,7 +308,6 @@ else:
     plt.plot([x for (x, y) in path_rrt_star], [y for (x, y) in path_rrt_star], '-r')
 plt.tight_layout()
 plt.show()
-
 
 # post-processing for smoothing RRT
 
