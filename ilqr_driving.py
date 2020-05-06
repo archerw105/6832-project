@@ -84,99 +84,46 @@ def rollout(x0, u_trj):
         x_trj[i,:] = discrete_dynamics(x_trj[i-1,:], u_trj[i-1,:])     
     return x_trj
 
-# Debug your implementation with this example code
-N = 30
-x0 = np.array([1, 0, 0, 25, 0])
-u_trj = np.zeros((N-1, n_u))
-x_trj = rollout(x0, u_trj)
 
-"""We define the stage cost function $\ell$ and final cost function $\ell_f$. The goal of these cost functions is to drive the vehicle along a circle with radius $r$ around the origin with a desired speed."""
-
-v_target = 0.5
-des_x = 14.76180605
-des_y = 10.00567686
+v_target = 0.01
 
 eps = 1e-6 # The derivative of sqrt(x) at x=0 is undefined. Avoid by subtle smoothing
-def cost_stage(x, u):
+def cost_stage(x, u, des):
     m = sym if x.dtype == object else np # Check type for autodiff
-    c_trj = (x[0]-des_x)**2 + (x[1]-des_y)**2 + eps
+    c_trj = (x[0]-des[0])**2 + (x[1]-des[1])**2 + eps
     c_speed = (x[3]-v_target)**2
     c_control= (u[0]**2 + u[1]**2)*0.1
     return c_trj + c_speed + c_control
 
-def cost_final(x):
+def cost_final(x,des):
     m = sym if x.dtype == object else np # Check type for autodiff
-    c_trj = (x[0]-des_x)**2 + (x[1]-des_y)**2 + eps
+    c_trj = (x[0]-des[0])**2 + (x[1]-des[1])**2 + eps
     c_speed = (x[3]-v_target)**2
     return c_trj + c_speed
 
-"""Your next task is to write the total cost function of the state and control trajectory. This is simply the sum of all stages over the control horizon and the objective from general problem formulation above."""
-
-def cost_trj(x_trj, u_trj):
+def cost_trj(x_trj, u_trj,des):
     total = 0.0
     # TODO: Sum up all costs
     for i in range(u_trj.shape[0]):
-      total += cost_stage(x_trj[i,:], u_trj[i,:])
-    total += cost_final(x_trj[-1,:])
+      total += cost_stage(x_trj[i,:], u_trj[i,:], des)
+    total += cost_final(x_trj[-1,:],des)
     return total
     
-# Debug your code
-cost_trj(x_trj, u_trj)
-
-"""### Bellman Recursion
-
-Now that we are warmed up, let's derive the actual algorithm. We start with the Bellman equation known from lecture defining optimality in a recursively backwards in time.
-\begin{align*} V(\mathbf{x}[n]) = & \min_{\mathbf{u}[n]} \quad \ell(\mathbf{x}[n], \mathbf{u}[n])  + V(\mathbf{x}[n+1]) \\
-\end{align*}
-
-You may have noticed that we neglected a couple of constraints of the original problem formulation. The fully equivalent formulation is 
-\begin{align*} \min_{\mathbf{u}[n]} \quad & Q(\mathbf{x}[n], \mathbf{u}[n]), \quad \forall n\in[0, N-1]
-\\ \text{subject to} \quad 
-& Q(\mathbf{x}[n], \mathbf{u}[n]) = \ell(\mathbf{x}[n], \mathbf{u}[n])  + V(\mathbf{x}[n+1]) \\
-& V(\mathbf{x}[N]) =   \ell_f(\mathbf{x}[N]) \\
-& \mathbf{x}[n+1] = {\bf      f}(\mathbf{x}[n], \mathbf{u}[n]), \quad \\ 
-& \mathbf{x}[0] = \mathbf{x}_0.
-\end{align*}
-The definition of a Q-function will become handy during the derivation of the algorithm.
-
-The key idea of iLQR is simple: Approximate the dynamics linearly and the costs quadratically around a nominal trajectory. We will expand all terms of the Q-function accordingly and optimize the resulting quadratic equation for an optimal linear control law in closed form. We will see that by applying the Bellman equation recursively backwards in time, the value function remains a quadratic.
-The linear and quadratic approximations are computed around the nominal state $\bf \bar{x} = \bf x - \delta \bf x$ and the nominal control $\bf \bar{u} = \bf u - \delta \bf u$. After applying the Bellman equation backwards in time from time $N$ to $0$ (the backward pass), we will update the nominal controls $\bf \bar{u}$ and states $\bf \bar{x}$ by applying the computed linear feedback law from the backward pass and rolling out the dynamics from the initial state $\bf x_0$ to the final horizon $N$. Iterating between backwards and forwards pass optimizes the control problem.
-
-### Q-function Expansion
-
-Let's start by expanding all terms in the Q-function of the Bellman equation. The quadaratic cost function is
-\begin{align*} 
-\ell(\mathbf{x}[n], \mathbf{u}[n]) \approx \ell_n 
-+ \begin{bmatrix}\ell_{\mathbf{x},n} \\  \ell_{\mathbf{u},n} \end{bmatrix} ^T  \begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n] \end{bmatrix}
-+ \frac{1}{2}\begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n] \end{bmatrix} ^T 
-\begin{bmatrix}\ell_{\mathbf{xx},n} &  \ell_{\mathbf{ux},n}^T\\  
-\ell_{\mathbf{ux},n} & \ell_{\mathbf{uu},n}\end{bmatrix}
- \begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n] \end{bmatrix},
-\end{align*}
-and the dynamics function is
-\begin{align*} x[n+1]=
-\mathbf{f}(\mathbf{x}[n], \mathbf{u}[n]) \approx \mathbf{f}_n
-+ \begin{bmatrix}\mathbf{f}_{\mathbf{x},n} & \mathbf{f}_{\mathbf{u},n} \end{bmatrix}  \begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n] \end{bmatrix}.
-\end{align*}
-Here, $\ell = \ell(\bar{\mathbf{x}}, \bar{\mathbf{u}})$ and $\mathbf{f} = \mathbf{f}(\bar{\mathbf{x}}, \bar{\mathbf{u}})$. $\ell_\mathbf{x}, \ell_\mathbf{u}, \mathbf{f}_\mathbf{x}, \mathbf{f}_\mathbf{u}$ are the gradients and Jacobians evaluated at $\bar{\mathbf{x}}$ and $\bar{\mathbf{u}}$. $\ell_\mathbf{xx}, \ell_\mathbf{ux}, \ell_\mathbf{uu}$ are the Hessians at $\bar{\mathbf{x}}$ and $\bar{\mathbf{u}}$. The expansion of the final cost follows analogously.
-The code to evaluate all the derivative terms is:
-"""
-
 class derivatives():
-    def __init__(self, discrete_dynamics, cost_stage, cost_final, n_x, n_u):
+    def __init__(self, discrete_dynamics, cost_stage, cost_final, n_x, n_u, des):
         self.x_sym = np.array([sym.Variable("x_{}".format(i)) for i in range(n_x)])
         self.u_sym = np.array([sym.Variable("u_{}".format(i)) for i in range(n_u)])
         x = self.x_sym
         u = self.u_sym
         
-        l = cost_stage(x, u)
+        l = cost_stage(x, u, des)
         self.l_x = sym.Jacobian([l], x).ravel()
         self.l_u = sym.Jacobian([l], u).ravel()
         self.l_xx = sym.Jacobian(self.l_x, x)
         self.l_ux = sym.Jacobian(self.l_u, x)
         self.l_uu = sym.Jacobian(self.l_u, u)
         
-        l_final = cost_final(x)
+        l_final = cost_final(x,des)
         self.l_final_x = sym.Jacobian([l_final], x).ravel()
         self.l_final_xx = sym.Jacobian(self.l_final_x, x)
         
@@ -207,48 +154,6 @@ class derivatives():
         
         return l_final_x, l_final_xx
         
-derivs = derivatives(discrete_dynamics, cost_stage, cost_final, n_x, n_u)
-# Test the output:
-# x = np.array([0, 0, 0, 0, 0])
-# u = np.array([0, 0])
-# print(derivs.stage(x, u))
-# print(derivs.final(x))
-
-"""Expanding the second term of the Q-function of the Bellman equation, i.e. the value function at the next state $\mathbf{x}[n+1]$, to second order yields \begin{align*} 
-V(\mathbf{x}[n+1]) \approx V_{n+1} + 
-V_{\mathbf{x},n+1}^T  \delta \mathbf{x}[n+1] + \frac{1}{2}\delta \mathbf{x}[n+1]^T 
-V_{\mathbf{xx},n+1} \delta \mathbf{x}[n+1],
-\end{align*}
-where $\delta \mathbf{x}[n+1]$ is given by
-\begin{align*} 
-\delta \mathbf{x}[n+1] 
-& = \mathbf{x}[n+1] - \bar{\mathbf{x}}[n+1] \\
-& = \mathbf{f}_n + \begin{bmatrix}\mathbf{f}_{\mathbf{x},n} &  \mathbf{f}_{\mathbf{u},n} \end{bmatrix}  \begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n] \end{bmatrix} -  \bar{\mathbf{x}}[n+1] \\
-& = \mathbf{f}_n + \begin{bmatrix}\mathbf{f}_{\mathbf{x},n} & \mathbf{f}_{\mathbf{u},n} \end{bmatrix}  \begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n] \end{bmatrix} -  \mathbf{f}(\bar{\mathbf{x}}[n], \bar{\mathbf{u}}[n]) \\
-& = \begin{bmatrix}\mathbf{f}_{\mathbf{x},n} &  \mathbf{f}_{\mathbf{u},n} \end{bmatrix}   \begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n] \end{bmatrix}.
-\end{align*}
-
-We have now expanded all terms of the Bellman equation and can regroup them in the form of
-\begin{align*} 
-Q(\mathbf{x}[n], \mathbf{u}[n]) & 
-\approx \ell_n 
-+ \begin{bmatrix}\ell_{\mathbf{x},n} \\  \ell_{\mathbf{u},n} \end{bmatrix} ^T  \begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n] \end{bmatrix}
-+ \frac{1}{2}\begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n] \end{bmatrix} ^T 
-\begin{bmatrix}\ell_{\mathbf{xx},n} &  \ell_{\mathbf{ux},n}^T\\  
-\ell_{\mathbf{ux},n} & \ell_{\mathbf{uu},n}\end{bmatrix}
- \begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n] \end{bmatrix}, \\
- & \quad + V_{n+1} + 
-V_{\mathbf{x},n+1}^T  \delta \mathbf{x}[n+1] + \frac{1}{2}\delta \mathbf{x}[n+1]^T 
-V_{\mathbf{xx},n+1} \delta \mathbf{x}[n+1], \\
-& = Q_n 
-+ \begin{bmatrix} Q_{\mathbf{x},n} \\  Q_{\mathbf{u},n} \end{bmatrix} ^T  \begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n] \end{bmatrix}
-+ \frac{1}{2}\begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n] \end{bmatrix} ^T 
-\begin{bmatrix} Q_{\mathbf{xx},n} &  Q_{\mathbf{ux},n}^T\\  
-Q_{\mathbf{ux},n} & Q_{\mathbf{uu},n}\end{bmatrix}
- \begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n] \end{bmatrix}.
-\end{align*}
-Find $Q_{\mathbf{x},n}$, $Q_{\mathbf{u},n}$, $Q_{\mathbf{xx},n}$, $Q_{\mathbf{ux},n}$, $Q_{\mathbf{uu},n}$ in terms of $\ell$ and $\textbf{f}$ and their expansions by collecitng coefficients in $(\cdot)\delta \mathbf{x}[n]$, $(\cdot)\delta \mathbf{u}[n]$, $1/2 \delta \mathbf{x}[n]^T (\cdot) \delta \mathbf{x}[n]$, and similar. Write your results in the corresponding function below.
-"""
 
 def Q_terms(l_x, l_u, l_xx, l_ux, l_uu, f_x, f_u, V_x, V_xx):
     # TODO: Define the Q-terms here
@@ -264,23 +169,6 @@ def Q_terms(l_x, l_u, l_xx, l_ux, l_uu, f_x, f_u, V_x, V_xx):
     Q_uu = l_uu + f_u.T.dot(V_xx).dot(f_u)
     return Q_x, Q_u, Q_xx, Q_ux, Q_uu
 
-"""### Q-function Optimization and Optimal Linear Control Law
-Amazing! Now that we have the Q-function in quadratic form, we can optimize for the optimal control gains in closed form.
-The original formulation, i.e. optimizing over $\mathbf{u}[n]$,
-\begin{align*} \min_{\mathbf{u}[n]} \quad & Q(\mathbf{x}[n], \mathbf{u}[n]),
-\end{align*} is equivalent to optimzing over $\delta \mathbf{u}[n]$.
-
-\begin{align*} 
-\delta \mathbf{u}[n]^* = {\arg\!\min}_{\delta \mathbf{u}[n]} \quad Q_n 
-+ \begin{bmatrix} Q_{\mathbf{x},n} \\  Q_{\mathbf{u},n} \end{bmatrix} ^T  \begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n] \end{bmatrix} + \frac{1}{2}\begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n] \end{bmatrix} ^T 
-\begin{bmatrix} Q_{\mathbf{xx},n} &  Q_{\mathbf{ux},n}^T\\  
-Q_{\mathbf{ux},n} & Q_{\mathbf{uu},n}\end{bmatrix}
- \begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n] \end{bmatrix}
- = k + K \delta \mathbf{x}[n]
-\end{align*} It turns out that the optimal control is linear in $\delta \mathbf{x}[n]$.
-Solve the quadratic optimization analytically and derive equations for the feedforward gains $k$ and feedback gains $K$. Implement the function below. Hint: You do not need to compute $Q_\mathbf{uu}^{-1}$ by hand.
-"""
-
 def gains(Q_uu, Q_u, Q_ux):
     Q_uu_inv = np.linalg.inv(Q_uu)
     # TOD: Implement the feedforward gain k and feedback gain K.
@@ -290,21 +178,6 @@ def gains(Q_uu, Q_u, Q_ux):
     K = -Q_uu_inv.dot(Q_ux)
     return k, K
 
-"""### Value Function Backward Update
-We are almost done! We need to derive the backwards update equation for the value function. We simply plugin the optimal control $\delta \mathbf{u}[n]^* = k + K \delta \mathbf{x}[n]$ back into the Q-function which yields the value function
-\begin{align*} 
-V(\mathbf{x}[n]) \approx V_{n} + 
-V_{\mathbf{x},n}^T  \delta \mathbf{x}[n] + \frac{1}{2}\delta \mathbf{x}[n]^T 
-V_{\mathbf{xx},n} \delta \mathbf{x}[n] = Q_n 
-+ \begin{bmatrix} Q_{\mathbf{x},n} \\  Q_{\mathbf{u},n} \end{bmatrix}^T  
-\begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n]^* \end{bmatrix} 
-+ \frac{1}{2}\begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n]^* \end{bmatrix}^T 
-\begin{bmatrix} Q_{\mathbf{xx},n} &  Q_{\mathbf{ux},n}^T\\  
-Q_{\mathbf{ux},n} & Q_{\mathbf{uu},n}\end{bmatrix}
- \begin{bmatrix} \delta \mathbf{x}[n] \\ \delta \mathbf{u}[n]^* \end{bmatrix}.
-\end{align*}
-Compare terms in $(\cdot) \delta \mathbf{x}[n]$ and $ 1/2 \delta \mathbf{x}[n]^T (\cdot)  \delta \mathbf{x}[n]$, find $V_{\mathbf{x},n}$, and $V_{\mathbf{xx},n}$ and implement the corresponding function below.
-"""
 
 def V_terms(Q_x, Q_u, Q_xx, Q_ux, Q_uu, K, k):
     # TODO: Implement V_x and V_xx, hint: use the A.dot(B) function for matrix multiplcation.
@@ -314,16 +187,10 @@ def V_terms(Q_x, Q_u, Q_xx, Q_ux, Q_uu, K, k):
     V_xx = Q_xx + 2*K.T.dot(Q_ux) + K.T.dot(Q_uu).dot(K)
     return V_x, V_xx
 
-"""### Expected Cost Reduction
-We can also estimate by how much we expect to reduce the cost by applying the optimal controls. Simply subtract the previous nominal Q-value ($\delta \mathbf{x}[n] = 0$ and $\delta \mathbf{u}[n]=0$) from the value function.  The result is implemented below and is a useful aid in checking how accurate the quadratic approximation is during convergence of iLQR and adapting stepsize and regularization.
-"""
 
 def expected_cost_reduction(Q_u, Q_uu, k):
     return -Q_u.T.dot(k) - 0.5 * k.T.dot(Q_uu.dot(k))
 
-"""### Forward Pass
-We have now have all the ingredients to implement the forward pass and the backward pass of iLQR. In the forward pass, at each timestep the new updated control $\mathbf{u}' =  \bar{\mathbf{u}} + k + K (x' - \bar{\mathbf{x}})$ is applied and the dynamis propagated based on the updated control. The nominal control and state trajectory $\bar{\mathbf{u}}, \bar{\mathbf{x}}$ with which we computed $k$ and $K$ are then updated and we receive a new set of state and control trajectories.
-"""
 
 def forward_pass(x_trj, u_trj, k_trj, K_trj):
     x_trj_new = np.zeros(x_trj.shape)
@@ -335,9 +202,6 @@ def forward_pass(x_trj, u_trj, k_trj, K_trj):
         x_trj_new[n+1,:] = discrete_dynamics(x_trj_new[n,:], u_trj_new[n,:]) # Apply dynamics
     return x_trj_new, u_trj_new
 
-"""### Backward Pass
-The backward pass starts from the terminal boundary condition $V(\mathbf{x}[N]) =   \ell_f(\mathbf{x}[N])$, such that $V_{\mathbf{x},N} = \ell_{\mathbf{x},f}$ and $V_{\mathbf{xx},N} = \ell_{\mathbf{xx},f}$. In the backwards loop terms for the Q-function at $n$ are computed based on the quadratic value function approximation at $n+1$ and the derivatives and hessians of dynamics and cost functions at $n$. To solve for the gains $k$ and $K$ an inversion of the matrix $Q_\mathbf{uu}$ is necessary. To ensure invertability and to improve conditioning we add a diagonal matrix to $Q_\mathbf{uu}$. This is equivalent to adding a quadratic penalty on the distance of the new control trajectory from the control trajectory of the previous iteration. The result is a smaller stepsize and more conservative convergence properties.
-"""
 
 def backward_pass(x_trj, u_trj, regu):
     k_trj = np.zeros([u_trj.shape[0], u_trj.shape[1]])
@@ -366,21 +230,12 @@ def backward_pass(x_trj, u_trj, regu):
         expected_cost_redu += expected_cost_reduction(Q_u, Q_uu, k)
     return k_trj, K_trj, expected_cost_redu
 
-"""### Main Loop
 
-The main iLQR loop consists of iteratively applying the forward and backward pass. The regularization is adapted based on whether the new control and state trajectories improved the cost. We lower the regularization if the total cost was reduced and accept the new trajectory pair. If the total cost did not decrease, the trajectory pair is rejected and the regularization is increased. You may want to test the algorithm with deactivated regularization and observe the changed behavior.
-The main loop stops if the maximum number of iterations is reached or the expected reduction is below a certain threshold.
-
-If you have correctly implemented all subparts of the iLQR you should see that the car plans to drive around the circle.
-"""
-
-def run_ilqr(x0, N, max_iter=50, regu_init=100):
+def run_ilqr(des, x0, N, max_iter=50, regu_init=100):
     # First forward rollout
     u_trj = np.random.randn(N-1, n_u)*0.0001
     x_trj = rollout(x0, u_trj)
-    # print("x_trj=",x_trj)
-    # print("u_trj=",u_trj)
-    total_cost = cost_trj(x_trj, u_trj)
+    total_cost = cost_trj(x_trj, u_trj, des)
     regu = regu_init
     max_regu = 10000
     min_regu = 0.01
@@ -398,7 +253,7 @@ def run_ilqr(x0, N, max_iter=50, regu_init=100):
         k_trj, K_trj, expected_cost_redu = backward_pass(x_trj, u_trj, regu)
         x_trj_new, u_trj_new = forward_pass(x_trj, u_trj, k_trj, K_trj)
         # Evaluate new trajectory
-        total_cost = cost_trj(x_trj_new, u_trj_new)
+        total_cost = cost_trj(x_trj_new, u_trj_new,des)
         cost_redu = cost_trace[-1] - total_cost
         redu_ratio = cost_redu / abs(expected_cost_redu)
         # Accept or reject iteration
@@ -425,62 +280,45 @@ def run_ilqr(x0, N, max_iter=50, regu_init=100):
     return x_trj, u_trj, cost_trace, regu_trace, redu_ratio_trace, redu_trace
 
 # Setup problem and call iLQR
-x0 = np.array([15, 15, -0.6, 0.0, 0.0])
 N = 100
 max_iter=50
 regu_init=100
-x_trj, u_trj, cost_trace, regu_trace, redu_ratio_trace, redu_trace = run_ilqr(x0, N, max_iter, regu_init)
 
+des = [(0, 0), (0.7913369 , 0.70519748), (8.71058056, 4.34059217), (11.23839671,  6.45805982), (14.76180605, 10.00567686),(15, 15)]
+des.reverse()
+print("des=",des)
+f_trj = []
+for i in range(1, len(des)):
+    if i == 1:
+        start = des[0]
+    else:
+        start = start_new
+    x0 = np.array([start[0],start[1], -2.5, 0.0, 0.0])
+    derivs = derivatives(discrete_dynamics, cost_stage, cost_final, n_x, n_u, des[i])
+    x_trj, u_trj, cost_trace, regu_trace, redu_ratio_trace, redu_trace = run_ilqr(des[i],x0, N, max_iter, regu_init)
+    start_new = (x_trj[-1][0], x_trj[-1][1])
+    if i == 1:
+        f_trj = x_trj
+    else:
+        f_trj = np.vstack((f_trj, x_trj))
 
 plt.figure(figsize=(9.5,8))
-# Plot circle
-# theta = np.linspace(0, 2*np.pi, 100)
-# plt.plot(r*np.cos(theta), r*np.sin(theta), linewidth=5)
 ax = plt.gca()
 
 # Plot resulting trajecotry of car
-plt.plot(x_trj[:,0], x_trj[:,1], linewidth=2)
-w = 0.5
-h = 0.25
+plt.plot(f_trj[:,0], f_trj[:,1], linewidth=1)
+w = 0.2
+h = 0.1
 
 # Plot rectangles
-for n in range(x_trj.shape[0]):
+for n in range(f_trj.shape[0]):
     rect = mpl.patches.Rectangle((-w/2,-h/2), w, h, fill=False)
     t = mpl.transforms.Affine2D().rotate_deg_around(0, 0, 
-            np.rad2deg(x_trj[n,2])).translate(x_trj[n,0], x_trj[n,1]) + ax.transData
+            np.rad2deg(f_trj[n,2])).translate(f_trj[n,0], f_trj[n,1]) + ax.transData
     rect.set_transform(t)
     ax.add_patch(rect)
 ax.set_aspect(1)
-plt.ylim((-2,16))
-plt.xlim((-2,16))
+plt.ylim((-1,16))
+plt.xlim((-1,16))
 plt.tight_layout()
-
-# plt.subplots(figsize=(10,6))
-# # Plot results
-# plt.subplot(2, 2, 1)
-# plt.plot(cost_trace)
-# plt.xlabel('# Iteration')
-# plt.ylabel('Total cost')
-# plt.title('Cost trace')
-
-# plt.subplot(2, 2, 2)
-# delta_opt = (np.array(cost_trace) - cost_trace[-1])
-# plt.plot(delta_opt)
-# plt.yscale('log')
-# plt.xlabel('# Iteration')
-# plt.ylabel('Optimality gap')
-# plt.title('Convergence plot')
-
-# plt.subplot(2, 2, 3)
-# plt.plot(redu_ratio_trace)
-# plt.title('Ratio of actual reduction and expected reduction')
-# plt.ylabel('Reduction ratio')
-# plt.xlabel('# Iteration')
-
-# plt.subplot(2, 2, 4)
-# plt.plot(regu_trace)
-# plt.title('Regularization trace')
-# plt.ylabel('Regularization')
-# plt.xlabel('# Iteration')
-# plt.tight_layout()
 plt.show()
